@@ -1,6 +1,6 @@
 // BookQuest schema. Applied automatically (CREATE ... IF NOT EXISTS) on first request.
 export const SCHEMA = `
--- Every row carries family_id so multi-family accounts are a small change later.
+-- Family-scoped data; this deployment intentionally supports one household.
 
 CREATE TABLE IF NOT EXISTS families (
   id UUID PRIMARY KEY,
@@ -63,4 +63,22 @@ CREATE TABLE IF NOT EXISTS completions (
 );
 
 CREATE INDEX IF NOT EXISTS completions_child_idx ON completions (child_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS families_single_pilot_idx ON families ((true));
+
+CREATE TABLE IF NOT EXISTS pilot_observations (
+  id UUID PRIMARY KEY,
+  family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+  observed_on DATE NOT NULL,
+  started_by TEXT NOT NULL CHECK (started_by IN ('child','parent','together','unknown')),
+  help_needed TEXT NOT NULL CHECK (help_needed IN ('unknown','none','little','lots')),
+  enjoyment TEXT NOT NULL CHECK (enjoyment IN ('yes','mixed','no','unknown')),
+  repeat_quest TEXT NOT NULL CHECK (repeat_quest IN ('yes','no','not_yet')),
+  experiment TEXT NOT NULL CHECK (experiment IN ('baseline','guided','parent_led_ai')),
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS pilot_observations_family_idx ON pilot_observations (family_id, observed_on DESC);
 `;

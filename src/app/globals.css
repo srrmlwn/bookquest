@@ -995,3 +995,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (max-width: 520px) {
   .gu-header .btn { font-size: 13px; min-height: 44px; padding: 10px 14px; }
 }
+
+/* Private family pilot controls. */
+.access-screen { flex-direction: column; gap: 18px; }
+.pilot-access { width: 100%; max-width: 380px; background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+.pilot-access .eyebrow { display: block; margin-bottom: 14px; }
+.pilot-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.pilot-summary { background: #e4ecdf; color: var(--teal-dark); border-radius: 12px; padding: 14px 18px; margin: 20px 0; font-size: 14px; line-height: 1.6; }
+.pilot-entry { padding: 22px 0; border-top: 1px solid var(--line); }
+.pilot-entry:first-child { border-top: 0; }
+.pilot-entry p { font-size: 14px; line-height: 1.7; }
+.pilot-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .pilot-fields { grid-template-columns: 1fr; } }
+.pilot-details { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 0; }
+.pilot-details summary { color: var(--muted); font-size: 13px; line-height: 1.6; cursor: pointer; }

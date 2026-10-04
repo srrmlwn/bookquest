@@ -21,12 +21,18 @@ export function recordingSupported() {
 export async function startRecording(): Promise<Recording> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   const mimeType = pickMime();
-  const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  let rec: MediaRecorder;
+  try {
+    rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    rec.start(1000);
+  } catch (error) {
+    stream.getTracks().forEach((track) => track.stop());
+    throw error;
+  }
   const chunks: Blob[] = [];
   rec.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
-  rec.start(1000);
 
   const release = () => stream.getTracks().forEach((t) => t.stop());
 

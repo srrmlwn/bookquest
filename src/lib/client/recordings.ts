@@ -1,5 +1,7 @@
 "use client";
 
+import { getRecordingPreferences, recordingExpired } from "./recording-preferences";
+
 // Answer recordings live only on this device, in IndexedDB. They are never uploaded.
 
 const DB_NAME = "bookquest";
@@ -29,7 +31,10 @@ function open(): Promise<IDBDatabase> {
   });
 }
 
-async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
+async function tx<T>(
+  mode: IDBTransactionMode,
+  fn: (s: IDBObjectStore) => IDBRequest<T> | void,
+): Promise<T | undefined> {
   const db = await open();
   return new Promise((resolve, reject) => {
     const t = db.transaction(STORE, mode);
@@ -38,31 +43,40 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
       db.close();
       resolve(req ? (req.result as T) : undefined);
     };
-    t.onerror = () => reject(t.error);
+    t.onabort = t.onerror = () => {
+      db.close();
+      reject(t.error ?? new Error("Recording storage failed"));
+    };
   });
 }
 
 export async function saveRecordings(completionId: string, items: { question: string; blob: Blob | null }[]) {
+  if (!getRecordingPreferences().enabled) return;
   try {
-    const db = await open();
-    await new Promise<void>((resolve, reject) => {
-      const t = db.transaction(STORE, "readwrite");
-      const s = t.objectStore(STORE);
+    await purgeExpiredRecordings();
+    if (!getRecordingPreferences().enabled) return;
+    await tx("readwrite", (s) => {
       items.forEach((it, index) => {
         if (!it.blob) return;
-        s.put({ key: `${completionId}:${index}`, completionId, index, question: it.question, blob: it.blob, createdAt: Date.now() });
+        s.put({
+          key: `${completionId}:${index}`,
+          completionId,
+          index,
+          question: it.question,
+          blob: it.blob,
+          createdAt: Date.now(),
+        });
       });
-      t.oncomplete = () => resolve();
-      t.onerror = () => reject(t.error);
     });
-    db.close();
-  } catch (e) {
-    console.warn("could not save recordings", e);
+  } catch {
+    // Recording storage must never prevent celebrating a completed book.
+    console.warn("Could not save local recordings");
   }
 }
 
 export async function getRecordings(completionId: string): Promise<StoredRecording[]> {
   try {
+    await purgeExpiredRecordings();
     const rows = (await tx<StoredRecording[]>("readonly", (s) => s.index("completionId").getAll(completionId))) ?? [];
     return rows.sort((a, b) => a.index - b.index);
   } catch {
@@ -72,6 +86,7 @@ export async function getRecordings(completionId: string): Promise<StoredRecordi
 
 export async function recordingCompletionIds(): Promise<Set<string>> {
   try {
+    await purgeExpiredRecordings();
     const keys = (await tx<IDBValidKey[]>("readonly", (s) => s.getAllKeys())) ?? [];
     return new Set(keys.map((k) => String(k).split(":")[0]));
   } catch {
@@ -80,17 +95,33 @@ export async function recordingCompletionIds(): Promise<Set<string>> {
 }
 
 export async function deleteRecordings(completionId: string) {
-  try {
-    const rows = await getRecordings(completionId);
-    if (!rows.length) return;
-    await tx("readwrite", (s) => {
-      rows.forEach((r) => s.delete(r.key));
-    });
-  } catch {}
+  await tx("readwrite", (s) => {
+    const req = s.index("completionId").openCursor(IDBKeyRange.only(completionId));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+  });
+  window.dispatchEvent(new Event("bq-recordings-changed"));
 }
 
 export async function deleteAllRecordings() {
-  try {
-    await tx("readwrite", (s) => s.clear());
-  } catch {}
+  await tx("readwrite", (s) => s.clear());
+  window.dispatchEvent(new Event("bq-recordings-changed"));
+}
+
+/** Expired data is removed on app use, not while a closed browser is asleep. */
+export async function purgeExpiredRecordings() {
+  await tx("readwrite", (s) => {
+    const req = s.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      if (recordingExpired(Number(cursor.value.createdAt))) cursor.delete();
+      cursor.continue();
+    };
+  });
 }

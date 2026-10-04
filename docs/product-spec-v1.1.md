@@ -1,3 +1,5 @@
+> Historical product vision (October 3, 2026), preserved for context. This document contains planned account, AI, assessment, and privacy features that are not the current implementation. For the private one-family MVP, use [README](../README.md), [TODO](../TODO.md), [Spec 002](../specs/002-family-pilot-controls.md), and the [supervised AI experiment](../specs/003-supervised-ai-experiment.md). No live AI or account signup is enabled today.
+
 Version 1.1 \| October 3 2026 \| Product BookQuest \| Reading character Buddy
 
 We are building a family reading companion that helps children read physical books more often. A grown-up creates a quest, chooses a reward and adds the available books. The child reads away from the screen, returns for a short voice conversation and sees their progress toward the reward.

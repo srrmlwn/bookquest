@@ -1,58 +1,89 @@
 # BookQuest
 
-A family reading companion. A grown-up sets up a quest (a few books toward a reward), the child reads a real book away from the screen, then comes back to tell **Buddy** — a friendly reading character — about it, and watches their progress toward the reward.
+A private reading experiment for one family. A grown-up creates a quest, chooses a reward, and approves the books. The child reads a real book away from the screen, then tells **Buddy** about it and celebrates their progress.
 
-The full product thinking lives in [`docs/product-spec-v1.1.md`](docs/product-spec-v1.1.md). This README records what we are actually building first and why it differs from that spec.
+**Current implementation:** a mobile-friendly Next.js web app on Vercel with Neon Postgres, guided spoken questions, optional local recordings, and a parent pilot log. There is no live AI, child transcription, account signup, or public onboarding. An internet connection is required for family data and completion; browser voice availability and offline speech depend on the chosen voice.
 
-## What we're testing (success criteria)
+This README and [`TODO.md`](TODO.md) describe the current family pilot. [`specs/002-family-pilot-controls.md`](specs/002-family-pilot-controls.md) defines the controls. [`specs/003-supervised-ai-experiment.md`](specs/003-supervised-ai-experiment.md) defines the next experiment. [`docs/product-spec-v1.1.md`](docs/product-spec-v1.1.md) is the historical broader vision; its proposed account and AI features are not implemented.
 
-A two-week home pilot with our own two kids. It works if:
+## What we want to learn
 
-- The kids pick up a book **without being reminded** more often than in a rough baseline week.
-- They enjoy the Buddy chat and ask for another quest after the first reward.
-- Grown-up effort stays small: a few minutes to set up a quest, under a minute per book to review.
+Test with our own children first. Watch whether they choose another book, enjoy talking about it, need less help over time, and ask for another quest. Keep setup and review small. A completed quest is an honor-system record, not evidence of comprehension or a lasting habit. Shared read-aloud sessions with a younger sibling are useful observations, not directly comparable to independent reading.
 
-A completed quest on its own does not count as success. Two kids over two weeks tells us about usability, not lasting habits.
+The parent log records date, reader, who initiated reading, help needed, enjoyment, whether they asked for another quest, experiment type, and an optional short note. It can include ordinary reading without BookQuest as a baseline. Notes sync through the family database and can be deleted. They are never sent to AI. The UI shows the latest 200 observations; older notes remain in the database. No PostHog or session replay is configured.
 
-## Key decisions for v1
+## Family access: no signup by design
 
-| Decision | Choice | Why |
-|---|---|---|
-| AI | **None in v1.** Buddy asks questions from a static pool, plus optional grown-up-written questions per book. | Ship faster, no cost, no risk of invented plot details. Tests whether the quest + talk loop works before paying for AI. |
-| Buddy's voice | Browser speech synthesis (built into the device). | Free, no key, works offline. Later: pre-generate audio files for the fixed pool if the voice sounds robotic. |
-| Child's answers | **Recorded on the device only** (IndexedDB). Never uploaded. Grown-up can play them back on that device. | A window into the child's ideas without storing kids' voices on a server. |
-| Completion | **Honor system.** Answering Buddy's questions completes the book immediately; a grown-up can undo it. | For a 5-year-old, "ask your grown-up" means no celebration. False "no"s hurt more than free passes during a pilot. |
-| Security | One grown-up PIN (set on first visit, stored hashed). A device that entered the PIN can run Kid Mode; grown-up mode re-asks for the PIN. No accounts. | Enough for one household. Every record carries a `family_id` so real sign-in is a small change later. |
-| Books | Grown-up types title + author, optional cover photo upload, optional 1–2 custom questions. No search, no scanning. | Matches the spec's MVP; keeps the child's world closed to approved books. |
-| Platform | Mobile-friendly web app: Next.js on Vercel, Neon Postgres. | Works on the family phone and tablet without app stores. |
+This deployment serves **one household**, not separate visitors' accounts.
 
-Deferred until after the pilot: AI conversation and assessment, server-side recordings, book search and photo intake, multi-family accounts, consent flows, notifications. See [`TODO.md`](TODO.md).
+- Production setup and **new-device unlock require `PILOT_ACCESS_KEY` plus the family PIN**. Without a valid server key configured, those operations stay locked. Local development may omit the key.
+- The access key is a randomly generated server secret, at least 32 and at most 256 characters. It is never returned by the API or stored in browser preferences. Do not put it in `NEXT_PUBLIC_*`, URLs, source control, or analytics.
+- New or changed PINs must have 6–8 digits. Existing 4–8 digit PINs continue to unlock previously configured families. PINs are salted and hashed with scrypt.
+- Unlocking issues signed, HttpOnly cookies: Kid Mode trusts the device for up to one year; parent API authorization expires after 30 minutes. Production cookies use Secure and SameSite=Lax.
+- Trusted family devices need only the PIN for parent re-entry. Every kid/parent data API verifies its cookie and checks family ownership on the server. Write requests require a matching browser Origin. Family responses are not cacheable.
+- Five failed PIN attempts cause a five-minute household lockout; updates are atomic. Only requests past the new-device access-key check reach PIN verification. This is a small-family control, not a complete public-service abuse defense.
+- Changing the PIN or choosing **Revoke other devices** rotates the signing secret. All other device and parent cookies stop working. The current device is reissued valid cookies. Changing the environment access key alone does not revoke existing cookies.
+- Anyone can load the app shell and see an access gate. They cannot read the family's shelf, children, or observations merely by knowing the URL. Trusted browsers intentionally expose Kid Mode, so protect the device itself.
 
-## How it works
+The database enforces one family row. An existing database with multiple family rows must be investigated before deploying this migration; it does not silently delete them. Account recovery, per-device inventories, email login, multi-family signup, and public-launch security are deferred. The deployment owner can recover the access key through Vercel; there is no self-service PIN recovery.
 
-```
-Grown-up mode (PIN)                      Kid Mode (no PIN on a trusted device)
-──────────────────                       ─────────────────────────────────────
-Add child (nickname, age band)    ──▶    1. My quest: path of book markers + reward
-Add books to the family shelf            2. Choose a book (approved covers only)
-Create quest: goal, reward, books        3. Talk to Buddy: 3 spoken questions,
-Review: finished books, play                child answers out loud (recorded locally)
-  recordings, undo, mark reward given    4. Celebrate: marker fills, "All done"
-```
+## Reading loop
 
-- **Question pool:** [`src/lib/questions.ts`](src/lib/questions.ts) — tagged by type (story, character, feelings, favorite, imagine) and age band. Each session picks 3 with different types, avoiding questions this child saw recently. Grown-up questions for that book go first.
-- **Data:** families → children → quests → quest_books ← books; completions (unique per quest + book). See [`src/lib/schema.ts`](src/lib/schema.sql). Tables are created automatically on first request.
+1. **Grown-up:** add readers and books (title, optional author/cover, up to two custom questions); create a quest with a goal, reward, optional date, and approved books.
+2. **Child:** choose their name, open the quest, tap **I finished a book**, and confirm a parent-approved cover.
+3. **Buddy:** ask two questions for ages 4–5, or three for ages 6–7 and 8–9. Custom questions go first; remaining questions vary by age and type, avoiding recent repeats when possible.
+4. **Child:** answer out loud, replay, skip without judgment, or stop for now. Buddy's acknowledgments are scripted and do not interpret the answer.
+5. **Celebrate:** the book counts once per quest. A grown-up can undo completion, fulfill the reward, and log what they observed.
 
-## Running locally
+Kid Mode has no camera, search, purchases, external links, or open-ended AI chat. API completions contain IDs and question IDs, not audio or transcripts.
+
+## Recording controls
+
+**This device → Keep their stories?**
+
+- Recording defaults to **off**, including on previously used browsers that have not opted into the new setting. With it off, kid sessions do not open the microphone. Guided questions and completion still work.
+- A grown-up can opt in on each device and choose **1, 7, or 30 days**; the default retention is 7 days. Audio is saved only after a completed session, in that browser's IndexedDB. Skipped answers and stopped sessions are not retained.
+- Settings are per browser and do not sync. Switching recording off stops new recordings, but does not erase existing unexpired audio. Retention changes apply to existing audio as well.
+- Expired audio is purged on app startup, return to the foreground, periodic checks while open, and recording reads/writes. A closed browser cannot run a deletion timer. Expired audio is filtered/purged before it is offered for playback.
+- Delete one book's audio independently of progress, or delete all recordings on the current device. Undo deletes local audio too. Other devices' recordings cannot be erased remotely.
+- Local audio is not encrypted by BookQuest and is not an account backup. Browser/OS access and clearing site storage matter. Revoking a device blocks server data access, but does not wipe audio or already-rendered data on that device.
+- The parent microphone test is explicitly started, stays in memory, and is discarded on leaving the tab. Recording failures do not block book celebration.
+
+## AI: next experiment, not a broad-release dependency
+
+Explore AI now under direct parent supervision. Start with parent-reviewed book facts and questions, then a parent-led session using fictional examples or selecting approved follow-ups locally. Actual child voice/transcript processing is a distinct opt-in experiment requiring a verified data path and appropriate provider terms (or a private local runtime). See the [AI experiment spec](specs/003-supervised-ai-experiment.md) for modes, safety tests, data boundaries, and go/no-go criteria. None of those AI integrations is enabled in this build.
+
+## Run locally
 
 ```bash
-npm install
+npm ci
 DATABASE_URL=postgres://... npm run dev
 ```
 
+A local PostgreSQL or Neon connection is required. Tables and additive indexes are applied automatically on first database use; see [`src/lib/schema.ts`](src/lib/schema.ts). Keep database credentials outside source control.
+
+For a private production or preview deployment:
+
+1. Set the database URL in Vercel. Use a separate database for development/preview when possible.
+2. Generate a key locally: `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
+3. Save the result as server-only `PILOT_ACCESS_KEY` in the desired Vercel environments, then redeploy. Use the same private value when pairing your family devices; do not paste it into GitHub.
+4. Set up or unlock with the access key and PIN. Existing trusted devices continue working without re-pairing until revoked/expired.
+5. Use **Open Kid Mode** before handing over the device; it clears the parent session cookie.
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+Tests use disposable PostgreSQL through PGlite, fake IndexedDB, and controlled cookie boundaries; they never connect to the live family database. Browser/device testing still matters for speech playback and microphone permission behavior.
+
 ## Repo layout
 
-- `README.md` — this file
-- `TODO.md` — task list and status
-- `specs/` — one markdown spec per feature in development
-- `docs/` — the original product specification
+- `TODO.md` — priorities and release/pilot status
+- `specs/` — implementation and experiment specifications
+- `docs/` — historical product vision
+- `src/lib/auth.ts`, `src/lib/pilot-access.ts` — sessions and the private-device access gate
+- `src/lib/client/recordings.ts` — local audio storage and deletion
+- `src/lib/pilot.ts`, `src/components/PilotLog.tsx` — parent observations
+- `tests/` — regression checks for access, observations, recording controls, and storage failures

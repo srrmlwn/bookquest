@@ -6,11 +6,18 @@ import Icon from "@/components/Icon";
 import Brand from "@/components/Brand";
 import Buddy from "@/components/Buddy";
 import PinPad from "@/components/PinPad";
+import PilotAccess from "@/components/PilotAccess";
 import NoDatabase from "@/components/NoDatabase";
 import { api, ApiError } from "@/lib/client/api";
 import { speak, unlockSpeech } from "@/lib/client/speech";
 
-type Status = { setup: boolean; trusted: boolean; grownup: boolean };
+type Status = {
+  setup: boolean;
+  trusted: boolean;
+  grownup: boolean;
+  accessKeyRequired: boolean;
+  accessKeyConfigured: boolean;
+};
 type KidChild = {
   id: string;
   nickname: string;
@@ -28,6 +35,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [firstPin, setFirstPin] = useState<string | null>(null);
+  const [accessKey, setAccessKey] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -68,11 +76,16 @@ export default function Home() {
   // First visit ever: a grown-up chooses the PIN.
   if (!status.setup) {
     return (
-      <main className="center-screen">
+      <main className="center-screen access-screen">
+        {status.accessKeyRequired && (
+          <PilotAccess value={accessKey} onChange={setAccessKey} configured={status.accessKeyConfigured} />
+        )}
         {firstPin === null ? (
           <PinPad
             title="Welcome to BookQuest"
-            hint="Grown-up: choose a PIN (4–8 digits). You'll use it to set up quests and to unlock new devices."
+            hint="Grown-up: choose a PIN (6–8 digits). Use it to unlock the grown-up corner."
+            minLength={6}
+            busy={status.accessKeyRequired && !status.accessKeyConfigured}
             submitLabel="Next"
             onSubmit={(p) => {
               setFirstPin(p);
@@ -83,7 +96,8 @@ export default function Home() {
         ) : (
           <PinPad
             title="Type the PIN again"
-            busy={busy}
+            minLength={6}
+            busy={busy || (status.accessKeyRequired && !status.accessKeyConfigured)}
             submitLabel="Save"
             error={error}
             onCancel={() => setFirstPin(null)}
@@ -95,10 +109,14 @@ export default function Home() {
               }
               setBusy(true);
               try {
-                await api("/api/pin", { action: "setup", pin: p });
+                await api("/api/pin", { action: "setup", pin: p, accessKey });
                 router.push("/grownup");
-              } catch {
-                setError("Couldn't save the PIN. Try again.");
+              } catch (e) {
+                setError(
+                  e instanceof ApiError && e.code === "access_key_required"
+                    ? "Check the family access key."
+                    : "Couldn't save the PIN. Try again.",
+                );
                 setFirstPin(null);
               } finally {
                 setBusy(false);
@@ -113,22 +131,30 @@ export default function Home() {
   // This device hasn't been trusted yet.
   if (!status.trusted) {
     return (
-      <main className="center-screen">
+      <main className="center-screen access-screen">
+        {status.accessKeyRequired && (
+          <PilotAccess value={accessKey} onChange={setAccessKey} configured={status.accessKeyConfigured} />
+        )}
         <PinPad
           title="Grown-up PIN"
           hint="Unlock this device once so it can open Kid Mode."
-          busy={busy}
+          busy={busy || (status.accessKeyRequired && !status.accessKeyConfigured)}
           error={error}
           onSubmit={async (p) => {
             setBusy(true);
             setError(null);
             try {
-              await api("/api/pin", { action: "unlock", pin: p });
+              await api("/api/pin", { action: "unlock", pin: p, accessKey });
+              setAccessKey("");
               await load();
             } catch (e) {
               if (e instanceof ApiError && e.code === "locked") {
                 setError(`Too many tries. Wait ${Math.ceil(Number(e.data.lockedSeconds ?? 300) / 60)} minutes.`);
-              } else setError("That PIN didn't work.");
+              } else if (e instanceof ApiError && e.code === "access_key_required")
+                setError("Check the family access key.");
+              else if (e instanceof ApiError && e.code === "pilot_access_not_configured")
+                setError("The private pilot key needs to be configured first.");
+              else setError("That PIN didn't work.");
             } finally {
               setBusy(false);
             }

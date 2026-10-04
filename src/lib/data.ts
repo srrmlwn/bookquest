@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { HttpError } from "./auth";
 import { one, query } from "./db";
 import type { AgeBand } from "./questions";
+import { STARTED_BY, HELP, ENJOYMENT, REPEAT, EXPERIMENTS, validObservationDate, type Observation } from "./pilot";
 
 export type Child = { id: string; nickname: string; age_band: AgeBand; reading_mode: string; color: string };
 export type Book = { id: string; title: string; author: string; cover: string | null; questions: string[] };
@@ -137,15 +138,14 @@ export async function completeBook(familyId: string, childId: string, body: Reco
 // ---------- Grown-up mode ----------
 
 export async function grownupData(familyId: string) {
-  const [children, books, quests, questBooks, completions] = await Promise.all([
+  const [children, books, quests, questBooks, completions, observations] = await Promise.all([
     query<Child>(
       "SELECT id, nickname, age_band, reading_mode, color FROM children WHERE family_id = $1 ORDER BY created_at",
       [familyId],
     ),
-    query<Book>(
-      "SELECT id, title, author, cover, questions FROM books WHERE family_id = $1 ORDER BY title",
-      [familyId],
-    ),
+    query<Book>("SELECT id, title, author, cover, questions FROM books WHERE family_id = $1 ORDER BY title", [
+      familyId,
+    ]),
     query<Quest>(
       `SELECT id, child_id, goal, reward, reward_emoji, to_char(target_date, 'YYYY-MM-DD') AS target_date,
               status, reward_given_at, created_at
@@ -160,8 +160,12 @@ export async function grownupData(familyId: string) {
       "SELECT id, quest_id, book_id, child_id, question_ids, created_at FROM completions WHERE family_id = $1 ORDER BY created_at DESC",
       [familyId],
     ),
+    query<Observation>(
+      "SELECT id, child_id, to_char(observed_on, 'YYYY-MM-DD') AS observed_on, started_by, help_needed, enjoyment, repeat_quest, experiment, notes, created_at FROM pilot_observations WHERE family_id = $1 ORDER BY observed_on DESC, created_at DESC LIMIT 200",
+      [familyId],
+    ),
   ]);
-  return { children, books, quests, questBooks, completions };
+  return { children, books, quests, questBooks, completions, observations };
 }
 
 async function owned(table: "children" | "books" | "quests" | "completions", rowId: string, familyId: string) {
@@ -189,6 +193,38 @@ function bookFields(b: Record<string, unknown>) {
 export async function grownupOp(familyId: string, body: Record<string, unknown>) {
   const op = body.op;
   switch (op) {
+    case "addObservation": {
+      const childId = id(body.child_id, "child");
+      await owned("children", childId, familyId);
+      if (!validObservationDate(body.observed_on)) throw new HttpError(400, "bad_observed_on");
+      const options = (v: unknown, list: readonly (readonly [string, string])[], field: string) =>
+        oneOf(
+          v,
+          list.map(([key]) => key),
+          field,
+        );
+      const observationId = randomUUID();
+      await query(
+        "INSERT INTO pilot_observations (id, family_id, child_id, observed_on, started_by, help_needed, enjoyment, repeat_quest, experiment, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        [
+          observationId,
+          familyId,
+          childId,
+          body.observed_on,
+          options(body.started_by, STARTED_BY, "started_by"),
+          options(body.help_needed, HELP, "help_needed"),
+          options(body.enjoyment, ENJOYMENT, "enjoyment"),
+          options(body.repeat_quest, REPEAT, "repeat_quest"),
+          options(body.experiment, EXPERIMENTS, "experiment"),
+          str(body.notes, 500, "notes", false),
+        ],
+      );
+      return { id: observationId };
+    }
+    case "deleteObservation": {
+      await query("DELETE FROM pilot_observations WHERE id=$1 AND family_id=$2", [id(body.id), familyId]);
+      return;
+    }
     case "addChild":
     case "updateChild": {
       const nickname = str(body.nickname, 30, "nickname");
@@ -229,10 +265,14 @@ export async function grownupOp(familyId: string, body: Record<string, unknown>)
       const bid = id(body.id);
       await owned("books", bid, familyId);
       const f = bookFields(body);
-      await query(
-        "UPDATE books SET title=$3, author=$4, cover=$5, questions=$6::jsonb WHERE id=$1 AND family_id=$2",
-        [bid, familyId, f.title, f.author, f.cover, JSON.stringify(f.questions)],
-      );
+      await query("UPDATE books SET title=$3, author=$4, cover=$5, questions=$6::jsonb WHERE id=$1 AND family_id=$2", [
+        bid,
+        familyId,
+        f.title,
+        f.author,
+        f.cover,
+        JSON.stringify(f.questions),
+      ]);
       return;
     }
     case "deleteBook": {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { purgeExpiredRecordings } from "@/lib/client/recordings";
 
 export const REDUCE_MOTION_KEY = "bq_reduce_motion";
 
@@ -28,6 +29,19 @@ function applyReduceMotion(on: boolean) {
 export default function DeviceSettings() {
   useEffect(() => {
     applyReduceMotion(getReduceMotion());
+    const purge = () => {
+      purgeExpiredRecordings().catch(() => {});
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") purge();
+    };
+    purge();
+    const timer = setInterval(purge, 60_000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
   return null;
 }
