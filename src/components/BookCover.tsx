@@ -1,6 +1,6 @@
 "use client";
 
-const PALETTE = ["#2a9d8f", "#f4a261", "#d1607a", "#5aa9e6", "#4fa64a", "#d9a420", "#8a6fd1"];
+const PALETTE = ["#397461", "#94552b", "#934760", "#47667e", "#506942", "#75612a", "#6e607f"];
 
 export function coverColor(title: string) {
   let h = 0;

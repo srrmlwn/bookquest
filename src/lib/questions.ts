@@ -67,13 +67,9 @@ export const POOL: Question[] = [
 
 /** Warm, non-judging replies between questions. Never evaluate the answer. */
 export const ACKS = [
-  "Ooh, thanks for telling me!",
-  "I love hearing about that.",
-  "That's so interesting!",
-  "Wow, I like how you said that.",
-  "Thank you! You're a great storyteller.",
-  "Mmm, I'm picturing it now.",
-  "That's a really good thought.",
+  "Thanks for sharing! Here's another question.",
+  "Thank you! Let's talk a little more about your book.",
+  "Thanks for telling me. One more thing!",
 ];
 
 const AGE_ORDER: AgeBand[] = ["4-5", "6-7", "8-9"];
@@ -150,5 +146,5 @@ export const BUDDY_LINES = {
   listening: "I'm listening!",
   complete: "Book complete! Great reading!",
   goal: (reward: string) => `You did it! You earned ${reward}!`,
-  micHelp: "I can't hear you right now, but you can still tell me out loud!",
+  micHelp: "The microphone is off. You can still tell your story out loud.",
 };

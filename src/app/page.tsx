@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Icon from "@/components/Icon";
+import Brand from "@/components/Brand";
 import Buddy from "@/components/Buddy";
 import PinPad from "@/components/PinPad";
 import NoDatabase from "@/components/NoDatabase";
@@ -140,9 +142,9 @@ export default function Home() {
   return (
     <main className="kid">
       <div className="kid-top">
-        <span />
+        <Brand />
         <button className="lock-btn" aria-label="Grown-ups" onClick={() => router.push("/grownup")}>
-          🔒
+          <Icon name="lock" />
         </button>
       </div>
       <Buddy size={150} mood="idle" />
@@ -155,7 +157,11 @@ export default function Home() {
         </>
       ) : (
         <>
-          <div className="speech">Who&apos;s reading today?</div>
+          <div className="reader-intro">
+            <span className="eyebrow">A little reading. A big adventure.</span>
+            <h1 className="kid-title">Who&apos;s reading today?</h1>
+            <p>Pick your name. Buddy is ready for your next story.</p>
+          </div>
           <div className="child-grid">
             {(children ?? []).map((c) => (
               <button
@@ -167,6 +173,9 @@ export default function Home() {
                   router.push(`/kid/${c.id}`);
                 }}
               >
+                <span className="reader-monogram" aria-hidden="true">
+                  {c.nickname.charAt(0)}
+                </span>
                 {c.nickname}
                 {c.goal ? (
                   <small>
