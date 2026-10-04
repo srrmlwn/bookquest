@@ -9,7 +9,8 @@
 - [x] Kid Mode: My quest → Choose a book → Talk to Buddy → Celebrate
 - [x] Buddy voice (browser speech) with replay; on-device recording with visible listening state and Stop
 - [x] Review: finished books, play recordings on this device, undo completion, mark reward given
-- [ ] Deploy to Vercel; test on the actual tablet and phone (iOS Safari microphone + audio quirks)
+- [x] Deploy to Vercel (live, PIN set, public)
+- [ ] Test on the actual tablet and phone (iOS Safari microphone + audio quirks)
 
 ## Next — pilot instrumentation
 
