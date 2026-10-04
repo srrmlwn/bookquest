@@ -3,12 +3,12 @@
 ## Now — Phase 0: home loop (no AI)
 
 - [x] Repo docs: README, TODO, specs
-- [ ] Data model + auto-created tables (Neon Postgres)
-- [ ] Grown-up PIN: set on first visit, trusted device cookie, grown-up re-entry
-- [ ] Grown-up mode: children, family shelf (title, author, cover, custom questions), quest (goal, reward, approved books)
-- [ ] Kid Mode: My quest → Choose a book → Talk to Buddy → Celebrate
-- [ ] Buddy voice (browser speech) with replay; on-device recording with visible listening state and Stop
-- [ ] Review: finished books, play recordings on this device, undo completion, mark reward given
+- [x] Data model + auto-created tables (Neon Postgres)
+- [x] Grown-up PIN: set on first visit, trusted device cookie, grown-up re-entry
+- [x] Grown-up mode: children, family shelf (title, author, cover, custom questions), quest (goal, reward, approved books)
+- [x] Kid Mode: My quest → Choose a book → Talk to Buddy → Celebrate
+- [x] Buddy voice (browser speech) with replay; on-device recording with visible listening state and Stop
+- [x] Review: finished books, play recordings on this device, undo completion, mark reward given
 - [ ] Deploy to Vercel; test on the actual tablet and phone (iOS Safari microphone + audio quirks)
 
 ## Next — pilot instrumentation

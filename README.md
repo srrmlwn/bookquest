@@ -41,7 +41,7 @@ Review: finished books, play                child answers out loud (recorded loc
 ```
 
 - **Question pool:** [`src/lib/questions.ts`](src/lib/questions.ts) — tagged by type (story, character, feelings, favorite, imagine) and age band. Each session picks 3 with different types, avoiding questions this child saw recently. Grown-up questions for that book go first.
-- **Data:** families → children → quests → quest_books ← books; completions (unique per quest + book). See [`src/lib/schema.sql`](src/lib/schema.sql). Tables are created automatically on first request.
+- **Data:** families → children → quests → quest_books ← books; completions (unique per quest + book). See [`src/lib/schema.ts`](src/lib/schema.sql). Tables are created automatically on first request.
 
 ## Running locally
 
