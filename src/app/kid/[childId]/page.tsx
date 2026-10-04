@@ -2,6 +2,8 @@
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Icon from "@/components/Icon";
+import Brand from "@/components/Brand";
 import Buddy, { type BuddyMood } from "@/components/Buddy";
 import BookCover from "@/components/BookCover";
 import NoDatabase from "@/components/NoDatabase";
@@ -20,7 +22,7 @@ type State = {
 };
 
 type Screen = "quest" | "choose" | "talk" | "celebrate";
-type TalkPhase = "speaking" | "listening" | "ack" | "paused" | "saving" | "saveFailed";
+type TalkPhase = "speaking" | "preparing" | "listening" | "ack" | "paused" | "saving" | "saveFailed";
 
 const MAX_ANSWER_MS = 90_000;
 
@@ -40,6 +42,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
   const [phase, setPhase] = useState<TalkPhase>("speaking");
   const [caption, setCaption] = useState("");
   const [micOff, setMicOff] = useState(false);
+  const answerBusyRef = useRef(false);
   const recRef = useRef<Recording | null>(null);
   const answersRef = useRef<{ question: string; blob: Blob | null }[]>([]);
   const sessionRef = useRef(0); // bumps on stop/pause so stale async steps are ignored
@@ -116,8 +119,8 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
   const listen = useCallback(
     async (sid: number) => {
       if (sid !== sessionRef.current) return;
-      setPhase("listening");
-      setMood("listening");
+      setPhase("preparing");
+      setMood("idle");
       if (!micOff && recordingSupported()) {
         try {
           const rec = await startRecording();
@@ -127,11 +130,16 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
           }
           recRef.current = rec;
         } catch {
+          if (sid !== sessionRef.current) return;
           setMicOff(true);
         }
       } else if (!recordingSupported()) {
         setMicOff(true);
       }
+      if (sid !== sessionRef.current) return;
+      setPhase("listening");
+      setMood("listening");
+      answerBusyRef.current = false;
       clearTimer();
       timerRef.current = setTimeout(() => finishAnswerRef.current?.(), MAX_ANSWER_MS);
     },
@@ -140,6 +148,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
 
   const ask = useCallback(
     async (qs: Question[], i: number, sid: number) => {
+      if (sid !== sessionRef.current) return;
       setQIndex(i);
       setPhase("speaking");
       await say(qs[i].text, sid);
@@ -174,23 +183,34 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
     }
   }, [state, selected, childId, questions, say]);
 
-  const finishAnswer = useCallback(async () => {
-    const sid = sessionRef.current;
-    clearTimer();
-    const rec = recRef.current;
-    recRef.current = null;
-    const blob = rec ? await rec.stop() : null;
-    if (sid !== sessionRef.current) return;
-    answersRef.current[qIndex] = { question: questions[qIndex]?.text ?? "", blob };
-    if (qIndex + 1 < questions.length) {
+  const finishAnswer = useCallback(
+    async (skip = false) => {
+      if (answerBusyRef.current) return;
+      answerBusyRef.current = true;
       setPhase("ack");
-      await say(ACKS[Math.floor(Math.random() * ACKS.length)], sid);
+      setMood("idle");
+      const sid = sessionRef.current;
+      clearTimer();
+      const rec = recRef.current;
+      recRef.current = null;
+      if (skip) rec?.cancel();
+      const blob = rec && !skip ? await rec.stop() : null;
       if (sid !== sessionRef.current) return;
-      await ask(questions, qIndex + 1, sid);
-    } else {
-      await save();
-    }
-  }, [qIndex, questions, say, ask, save]);
+      answersRef.current[qIndex] = { question: questions[qIndex]?.text ?? "", blob };
+      if (qIndex + 1 < questions.length) {
+        setPhase("ack");
+        await say(
+          skip ? "That’s okay. Let’s try another question." : ACKS[Math.floor(Math.random() * ACKS.length)],
+          sid,
+        );
+        if (sid !== sessionRef.current) return;
+        await ask(questions, qIndex + 1, sid);
+      } else {
+        await save();
+      }
+    },
+    [qIndex, questions, say, ask, save],
+  );
 
   const finishAnswerRef = useRef<(() => void) | null>(null);
   finishAnswerRef.current = finishAnswer;
@@ -255,7 +275,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
   const { child, quest, books } = state;
   const lockBtn = (
     <button className="lock-btn" aria-label="Grown-ups" onClick={() => router.push("/grownup")}>
-      🔒
+      <Icon name="lock" />
     </button>
   );
 
@@ -263,6 +283,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
     const done = quest ? Math.min(quest.done, quest.goal) : 0;
     const finished = quest ? quest.done >= quest.goal : false;
     const left = quest ? quest.goal - done : 0;
+    const readBooks = books.filter((book) => book.done);
     return (
       <main className="kid">
         <div className="kid-top">
@@ -278,31 +299,46 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
             unlockSpeech();
             if (!quest) say(BUDDY_LINES.noQuest);
             else if (finished) say(BUDDY_LINES.goal(quest.reward));
-            else
-              say(
-                `You've read ${done} ${done === 1 ? "book" : "books"}. ${left} more to go for ${quest.reward}!`,
-              );
+            else say(`You've read ${done} ${done === 1 ? "book" : "books"}. ${left} more to go for ${quest.reward}!`);
           }}
         >
           <Buddy size={150} mood={finished ? "happy" : mood} />
         </button>
+        <span className="eyebrow">Your reading adventure</span>
         <h1 className="kid-title">{child.nickname}&apos;s quest</h1>
         {!quest ? (
           <div className="speech">{BUDDY_LINES.noQuest}</div>
         ) : (
           <>
-            <div className="path" aria-label={`${done} of ${quest.goal} books read`}>
-              {Array.from({ length: quest.goal }).map((_, i) => (
-                <div key={i} className={i < done ? "marker done" : "marker"}>
-                  {i < done ? "★" : ""}
+            <div className="quest-panel">
+              <div className="quest-count">
+                <strong>{done}</strong>
+                <span>of {quest.goal} books explored</span>
+              </div>
+              <div className="path" aria-label={`${done} of ${quest.goal} books read`}>
+                {Array.from({ length: quest.goal }).map((_, i) => (
+                  <div key={i} className={i < done ? "marker done" : "marker"}>
+                    {i < done ? (
+                      readBooks[i] ? (
+                        <BookCover title={readBooks[i].title} cover={readBooks[i].cover} variant="thumb" />
+                      ) : (
+                        "★"
+                      )
+                    ) : (
+                      ""
+                    )}
+                  </div>
+                ))}
+                <div className={finished ? "marker reward earned" : "marker reward"}>{quest.reward_emoji}</div>
+              </div>
+              <div className="reward-label">
+                <span className="eyebrow">{finished ? "Adventure complete" : "You’re reading toward"}</span>
+                {quest.reward_emoji} {quest.reward}
+                <div className="muted" style={{ fontSize: 14, marginTop: 6 }}>
+                  {finished ? "You did it!" : `${left} more ${left === 1 ? "book" : "books"} to go`}
                 </div>
-              ))}
-              <div className={finished ? "marker reward earned" : "marker reward"}>{quest.reward_emoji}</div>
+              </div>
             </div>
-            <div className="reward-label">
-              {finished ? `You earned: ${quest.reward}!` : `${left} more for: ${quest.reward}`}
-            </div>
-            <div className="grow" />
             {finished ? (
               <div className="speech">Amazing reading! Ask a grown-up about your reward.</div>
             ) : (
@@ -316,7 +352,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
                   say(remaining.length ? BUDDY_LINES.whichBook : BUDDY_LINES.noBooks);
                 }}
               >
-                📖 I finished a book!
+                I finished a book! →
               </button>
             )}
           </>
@@ -359,7 +395,11 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
               }}
             >
               <BookCover title={b.title} cover={b.cover} />
-              {b.done && <span className="star" aria-label="Already read">⭐</span>}
+              {b.done && (
+                <span className="star" aria-label="Already read">
+                  ⭐
+                </span>
+              )}
               <span className="book-name">{b.title}</span>
             </button>
           ))}
@@ -394,28 +434,39 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
               <span key={i} className={i <= qIndex ? "on" : ""} />
             ))}
           </div>
-          <span />
+          <Brand />
         </div>
+        <div className="talk-book">{selected?.title}</div>
         <Buddy size={170} mood={phase === "listening" ? "listening" : mood} />
         <div className="speech">{phase === "paused" ? "Let's keep talking!" : caption}</div>
-        {phase === "listening" &&
-          (micOff ? (
-            <p className="muted" style={{ fontSize: 20, margin: 0 }}>
-              {BUDDY_LINES.micHelp}
-            </p>
-          ) : (
-            <span className="listening-pill">
-              <span className="rec-dot" /> Listening…
-            </span>
-          ))}
+        <div className="talk-status" role="status" aria-live="polite">
+          {(phase === "speaking" || phase === "ack") && "Buddy’s turn · Listen to the question"}
+          {phase === "preparing" && "Getting the microphone ready…"}
+          {phase === "saving" && "Adding this book to your quest…"}
+          {phase === "listening" &&
+            (micOff ? (
+              <p className="muted" style={{ fontSize: 20, margin: 0 }}>
+                {BUDDY_LINES.micHelp}
+              </p>
+            ) : (
+              <span className="listening-pill">
+                <span className="rec-dot" /> Your turn · Microphone on
+              </span>
+            ))}
+        </div>
         <div className="grow" />
         {phase === "listening" && (
-          <div className="talk-controls">
-            <button className="round-btn" aria-label="Hear the question again" onClick={replay}>
-              🔁
-            </button>
-            <button className="kid-btn" onClick={() => finishAnswer()}>
-              ✓ I&apos;m done
+          <div className="talk-actions">
+            <div className="talk-controls">
+              <button className="round-btn" aria-label="Hear the question again" onClick={replay}>
+                <Icon name="replay" />
+              </button>
+              <button className="kid-btn" onClick={() => finishAnswer()}>
+                ✓ Done talking
+              </button>
+            </div>
+            <button className="skip-btn" onClick={() => finishAnswer(true)}>
+              I’m not sure · Skip this one
             </button>
           </div>
         )}
@@ -431,7 +482,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
         )}
         {phase !== "saving" && (
           <button className="kid-btn stop" onClick={stopTalk}>
-            ■ Stop
+            Stop for now
           </button>
         )}
       </main>
@@ -444,6 +495,8 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
     <main className="kid">
       <Confetti />
       <div className="kid-top" />
+      <span className="eyebrow">Another story in your adventure</span>
+      <h1 className="celebration-title">{c.reached ? "Quest complete!" : "One for the bookshelf."}</h1>
       <Buddy size={170} mood="happy" />
       <div className="speech">{c.reached && quest ? BUDDY_LINES.goal(quest.reward) : BUDDY_LINES.complete}</div>
       {quest && (
@@ -459,6 +512,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
           <div className={c.reached ? "marker reward earned" : "marker reward"}>{quest.reward_emoji}</div>
         </div>
       )}
+      <p className="muted">{c.reached ? "Time to celebrate with your grown-up." : "Now go find your next story."}</p>
       <div className="grow" />
       <button
         className="kid-btn"

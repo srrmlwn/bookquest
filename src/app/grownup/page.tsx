@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Brand from "@/components/Brand";
 import PinPad from "@/components/PinPad";
 import BookCover from "@/components/BookCover";
 import NoDatabase from "@/components/NoDatabase";
@@ -159,7 +160,7 @@ export default function GrownupPage() {
   return (
     <main className="gu">
       <div className="gu-header">
-        <h1>📚 BookQuest · Grown-ups</h1>
+        <Brand />
         <div className="row">
           <button
             className="btn"
@@ -170,6 +171,17 @@ export default function GrownupPage() {
           >
             Open Kid Mode
           </button>
+        </div>
+      </div>
+      <div className="parent-intro">
+        <div>
+          <span className="eyebrow">The grown-up corner</span>
+          <h2>Little readers, big discoveries.</h2>
+          <p>Set up their next adventure. Let Buddy take it from there.</p>
+        </div>
+        <div className="parent-stat">
+          <strong>{data.completions.length}</strong>
+          <span>books celebrated</span>
         </div>
       </div>
       <div className="tabs" role="tablist">
