@@ -1,6 +1,7 @@
 "use client";
 
-// Buddy's voice: the browser's built-in speech synthesis. No network, no API key.
+// Buddy uses browser speech synthesis, without a BookQuest API key.
+// Some installed voices are network-backed; offline behavior depends on the voice.
 
 const RATE_KEY = "bq_speech_rate";
 const VOICE_KEY = "bq_voice";

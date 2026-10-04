@@ -45,8 +45,8 @@ async function readToken(kind: Kind): Promise<string | null> {
   const parts = raw.split(".");
   if (parts.length !== 4) return null;
   const [familyId, k, exp, sig] = parts;
-  if (k !== kind || Number(exp) < Date.now() / 1000) return null;
-  if (!/^[0-9a-f-]{36}$/.test(familyId)) return null;
+  if (k !== kind || !Number.isFinite(Number(exp)) || Number(exp) < Date.now() / 1000) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(familyId)) return null;
   const f = await one<Family>("SELECT * FROM families WHERE id = $1", [familyId]);
   if (!f) return null;
   const expected = Buffer.from(sign(f.cookie_secret, `${familyId}.${k}.${exp}`));
@@ -90,7 +90,6 @@ export function validPin(pin: unknown): pin is string {
 
 /** First run: create the family with its PIN. Refuses if a family already exists. */
 export async function createFamily(pin: string, res: NextResponse): Promise<boolean> {
-  if (await familyExists()) return false;
   const salt = randomBytes(16).toString("hex");
   const f: Family = {
     id: randomUUID(),
@@ -100,10 +99,13 @@ export async function createFamily(pin: string, res: NextResponse): Promise<bool
     failed_attempts: 0,
     locked_until: null,
   };
-  await query(
-    "INSERT INTO families (id, pin_hash, pin_salt, cookie_secret) VALUES ($1, $2, $3, $4)",
+  // A unique constant-expression index enforces the one-family pilot even
+  // when two setup requests arrive together.
+  const inserted = await one<{ id: string }>(
+    "INSERT INTO families (id, pin_hash, pin_salt, cookie_secret) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id",
     [f.id, f.pin_hash, f.pin_salt, f.cookie_secret],
   );
+  if (!inserted) return false;
   setSessionCookies(res, f);
   return true;
 }
@@ -124,15 +126,17 @@ export async function unlock(pin: string, res: NextResponse): Promise<UnlockResu
     setSessionCookies(res, f);
     return { ok: true };
   }
-  const attempts = f.failed_attempts + 1;
-  if (attempts >= MAX_ATTEMPTS) {
-    await query(
-      `UPDATE families SET failed_attempts = 0, locked_until = now() + interval '${LOCK_MINUTES} minutes' WHERE id = $1`,
-      [f.id],
-    );
+  // Increment inside SQL; concurrent failed attempts must not overwrite each other.
+  const failed = await one<{ locked_until: string | null }>(
+    `UPDATE families SET
+       locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN now() + ($3 * interval '1 minute') ELSE locked_until END,
+       failed_attempts = CASE WHEN failed_attempts + 1 >= $2 THEN 0 ELSE failed_attempts + 1 END
+     WHERE id = $1 AND (locked_until IS NULL OR locked_until <= now()) RETURNING locked_until`,
+    [f.id, MAX_ATTEMPTS, LOCK_MINUTES],
+  );
+  if (!failed || (failed.locked_until && new Date(failed.locked_until).getTime() > Date.now())) {
     return { ok: false, lockedSeconds: LOCK_MINUTES * 60 };
   }
-  await query("UPDATE families SET failed_attempts = $2 WHERE id = $1", [f.id, attempts]);
   return { ok: false };
 }
 
@@ -140,33 +144,54 @@ export function lock(res: NextResponse) {
   res.cookies.set(GROWNUP_COOKIE, "", cookieOpts(0));
 }
 
-export async function changePin(familyId: string, pin: string) {
+export async function changePin(familyId: string, pin: string, res: NextResponse) {
   const salt = randomBytes(16).toString("hex");
-  await query("UPDATE families SET pin_hash = $2, pin_salt = $3 WHERE id = $1", [
+  const f = await one<Family>(
+    "UPDATE families SET pin_hash = $2, pin_salt = $3, cookie_secret = $4 WHERE id = $1 RETURNING *",
+    [familyId, hashPin(pin, salt), salt, randomBytes(32).toString("hex")],
+  );
+  if (!f) throw new HttpError(401, "pin_required");
+  setSessionCookies(res, f);
+}
+
+/** Rotate the signing key: keep this device, revoke all other device/parent cookies. */
+export async function revokeOtherDevices(familyId: string, res: NextResponse) {
+  const f = await one<Family>("UPDATE families SET cookie_secret = $2 WHERE id = $1 RETURNING *", [
     familyId,
-    hashPin(pin, salt),
-    salt,
+    randomBytes(32).toString("hex"),
   ]);
+  if (!f) throw new HttpError(401, "pin_required");
+  setSessionCookies(res, f);
 }
 
 /** Wrap a route handler: maps auth failures and a missing database to JSON errors. */
 export function handler<A extends unknown[]>(fn: (...args: A) => Promise<Response>) {
   return async (...args: A): Promise<Response> => {
     try {
-      return await fn(...args);
+      const req = args[0];
+      if (req instanceof Request && req.method !== "GET" && req.method !== "HEAD") {
+        if (req.headers.get("origin") !== new URL(req.url).origin) throw new HttpError(403, "wrong_origin");
+      }
+      const response = await fn(...args);
+      response.headers.set("Cache-Control", "no-store");
+      return response;
     } catch (e) {
       if (e instanceof DbNotConfigured) {
         return NextResponse.json({ error: "no_database" }, { status: 503 });
       }
       if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });
-      console.error("route error", e instanceof Error ? e.message : e);
+      // Avoid logging database messages that may contain family-entered values.
+      console.error("route error", e instanceof Error ? e.name : "unknown_error");
       return NextResponse.json({ error: "server_error" }, { status: 500 });
     }
   };
 }
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
   }
 }

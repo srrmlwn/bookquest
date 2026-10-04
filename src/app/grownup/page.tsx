@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Brand from "@/components/Brand";
 import PinPad from "@/components/PinPad";
+import PilotAccess from "@/components/PilotAccess";
+import PilotLog from "@/components/PilotLog";
+import RecordingControls from "@/components/RecordingControls";
 import BookCover from "@/components/BookCover";
 import NoDatabase from "@/components/NoDatabase";
 import { getReduceMotion, setReduceMotion } from "@/components/DeviceSettings";
@@ -18,8 +21,9 @@ import {
   speechSupported,
   unlockSpeech,
 } from "@/lib/client/speech";
-import { recordingSupported, startRecording } from "@/lib/client/recorder";
-import { deleteAllRecordings, deleteRecordings, getRecordings, recordingCompletionIds } from "@/lib/client/recordings";
+import { recordingSupported, startRecording, type Recording } from "@/lib/client/recorder";
+import { deleteRecordings, getRecordings, recordingCompletionIds } from "@/lib/client/recordings";
+import type { Observation } from "@/lib/pilot";
 import { questionText } from "@/lib/questions";
 
 type Child = { id: string; nickname: string; age_band: string; reading_mode: string; color: string };
@@ -42,9 +46,10 @@ type Data = {
   quests: Quest[];
   questBooks: { quest_id: string; book_id: string }[];
   completions: Completion[];
+  observations: Observation[];
 };
 
-type Tab = "quests" | "shelf" | "readers" | "device";
+type Tab = "quests" | "shelf" | "readers" | "pilot" | "device";
 const COLORS = ["teal", "apricot", "berry", "sky", "leaf", "sun"];
 const COLOR_HEX: Record<string, string> = {
   teal: "#2a9d8f",
@@ -67,6 +72,8 @@ export default function GrownupPage() {
   const [noDb, setNoDb] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [accessKey, setAccessKey] = useState("");
+  const [access, setAccess] = useState({ required: false, configured: false });
   const [data, setData] = useState<Data | null>(null);
   const [tab, setTab] = useState<Tab>("quests");
   const [toast, setToast] = useState<string | null>(null);
@@ -86,7 +93,8 @@ export default function GrownupPage() {
   useEffect(() => {
     (async () => {
       try {
-        const s = await api<{ setup: boolean }>("/api/status");
+        const s = await api<{ setup: boolean; accessKeyRequired: boolean; accessKeyConfigured: boolean }>("/api/status");
+        setAccess({ required: s.accessKeyRequired, configured: s.accessKeyConfigured });
         if (!s.setup) {
           setSetupNeeded(true);
           return;
@@ -131,21 +139,26 @@ export default function GrownupPage() {
   if (authed === null) return <main className="center-screen muted">Loading…</main>;
   if (!authed) {
     return (
-      <main className="center-screen">
+      <main className="center-screen access-screen">
+        {access.required && <PilotAccess value={accessKey} onChange={setAccessKey} configured={access.configured} />}
         <PinPad
           title="Grown-up PIN"
-          busy={busy}
+          busy={busy || (access.required && !access.configured)}
           error={pinError}
           onCancel={() => router.push("/")}
           onSubmit={async (pin) => {
             setBusy(true);
             setPinError(null);
             try {
-              await api("/api/pin", { action: "unlock", pin });
+              await api("/api/pin", { action: "unlock", pin, accessKey });
+              setAccessKey("");
+              setAccess({ required: false, configured: access.configured });
               await load();
             } catch (e) {
               if (e instanceof ApiError && e.code === "locked")
                 setPinError(`Too many tries. Wait ${Math.ceil(Number(e.data.lockedSeconds ?? 300) / 60)} minutes.`);
+              else if (e instanceof ApiError && e.code === "access_key_required") setPinError("Check the family access key.");
+              else if (e instanceof ApiError && e.code === "pilot_access_not_configured") setPinError("The private pilot key needs to be configured first.");
               else setPinError("That PIN didn't work.");
             } finally {
               setBusy(false);
@@ -190,6 +203,7 @@ export default function GrownupPage() {
             ["quests", "Quests"],
             ["shelf", "Book shelf"],
             ["readers", "Readers"],
+            ["pilot", "Pilot log"],
             ["device", "This device"],
           ] as [Tab, string][]
         ).map(([k, label]) => (
@@ -202,7 +216,8 @@ export default function GrownupPage() {
       {tab === "quests" && <QuestsTab data={data} op={op} goTo={setTab} />}
       {tab === "shelf" && <ShelfTab data={data} op={op} />}
       {tab === "readers" && <ReadersTab data={data} op={op} />}
-      {tab === "device" && <DeviceTab setToast={setToast} />}
+      {tab === "pilot" && <PilotLog children={data.children} observations={data.observations ?? []} op={op} />}
+      {tab === "device" && <DeviceTab setToast={setToast} accessConfigured={access.configured} />}
 
       {toast && (
         <div
@@ -236,7 +251,11 @@ function QuestsTab({ data, op, goTo }: { data: Data; op: OpFn; goTo: (t: Tab) =>
   const [localRecs, setLocalRecs] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    recordingCompletionIds().then(setLocalRecs);
+    const refresh = () => recordingCompletionIds().then(setLocalRecs);
+    refresh();
+    const timer = setInterval(refresh, 60_000);
+    window.addEventListener("bq-recordings-changed", refresh);
+    return () => { clearInterval(timer); window.removeEventListener("bq-recordings-changed", refresh); };
   }, [data]);
 
   if (data.children.length === 0) {
@@ -330,7 +349,8 @@ function QuestsTab({ data, op, goTo }: { data: Data; op: OpFn; goTo: (t: Tab) =>
                           hasRecordings={localRecs.has(c.id)}
                           onUndo={async () => {
                             if (!confirm("Undo this finished book? It will go back on the shelf and progress drops by one.")) return;
-                            await deleteRecordings(c.id);
+                            try { await deleteRecordings(c.id); }
+                            catch { alert("Couldn't delete the local recording. Try again before undoing this book."); return; }
                             await op({ op: "undoCompletion", id: c.id }, "Undone");
                           }}
                         />
@@ -390,17 +410,20 @@ function CompletionRow({
 }) {
   const [open, setOpen] = useState(false);
   const [recs, setRecs] = useState<{ question: string; url: string }[] | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
-    if (!open || !hasRecordings || recs) return;
+    if (!open || !hasRecordings) { setRecs(null); return; }
+    let active = true;
     let urls: string[] = [];
     getRecordings(completion.id).then((rows) => {
       const mapped = rows.map((r) => ({ question: r.question, url: URL.createObjectURL(r.blob) }));
       urls = mapped.map((m) => m.url);
-      setRecs(mapped);
+      if (active) setRecs(mapped);
+      else urls.forEach((u) => URL.revokeObjectURL(u));
     });
-    return () => urls.forEach((u) => URL.revokeObjectURL(u));
-  }, [open, hasRecordings, completion.id, recs]);
+    return () => { active = false; urls.forEach((u) => URL.revokeObjectURL(u)); };
+  }, [open, hasRecordings, completion.id]);
 
   const asked = completion.question_ids.map((id, i) => questionText(id) ?? book?.questions?.[Number(id.split("-")[1])] ?? `Question ${i + 1}`);
 
@@ -421,6 +444,13 @@ function CompletionRow({
           <button className="btn small danger" onClick={onUndo}>
             Undo
           </button>
+          {hasRecordings && <button className="btn small ghost" disabled={deleteBusy} onClick={async () => {
+            if (!confirm("Delete this book's recordings from this device? Reading progress stays the same.")) return;
+            setDeleteBusy(true);
+            try { await deleteRecordings(completion.id); setOpen(false); setRecs(null); }
+            catch { alert("Couldn't delete the recordings. Try again or clear this site's browser storage."); }
+            finally { setDeleteBusy(false); }
+          }}>Delete audio</button>}
         </div>
         {open && (
           <div style={{ marginTop: 6 }}>
@@ -907,7 +937,7 @@ function ChildEditor({ child, op, onClose }: { child: Child | null; op: OpFn; on
 
 // ---------------- Device ----------------
 
-function DeviceTab({ setToast }: { setToast: (s: string) => void }) {
+function DeviceTab({ setToast, accessConfigured }: { setToast: (s: string) => void; accessConfigured: boolean }) {
   const [rate, setRateState] = useState(0.95);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voice, setVoice] = useState<string>("");
@@ -932,7 +962,8 @@ function DeviceTab({ setToast }: { setToast: (s: string) => void }) {
     return (
       <div className="card">
         <PinPad
-          title={changingPin === "first" ? "New PIN" : "Type the new PIN again"}
+          title={changingPin === "first" ? "New PIN (6–8 digits)" : "Type the new PIN again"}
+          minLength={6}
           submitLabel={changingPin === "first" ? "Next" : "Save"}
           error={pinErr}
           onCancel={() => {
@@ -953,7 +984,7 @@ function DeviceTab({ setToast }: { setToast: (s: string) => void }) {
             }
             try {
               await api("/api/pin", { action: "change", pin: p });
-              setToast("PIN changed");
+              setToast("PIN changed. Other devices are now locked.");
               setChangingPin("off");
             } catch {
               setPinErr("Couldn't change the PIN.");
@@ -1037,31 +1068,20 @@ function DeviceTab({ setToast }: { setToast: (s: string) => void }) {
           Reduce motion (no bouncing or confetti)
         </label>
       </div>
+      <RecordingControls setToast={setToast} />
       <div className="card stack">
-        <h2>Privacy</h2>
-        <p className="muted" style={{ margin: 0, fontSize: 15 }}>
-          Kids&apos; answers are recorded only on the device they used and are never uploaded. You can listen to them in the
-          Quests tab on that device.
-        </p>
-        <div>
-          <button
-            className="btn danger"
-            onClick={async () => {
-              if (!confirm("Delete all recordings stored on this device?")) return;
-              await deleteAllRecordings();
-              setToast("Recordings deleted from this device");
-            }}
-          >
-            Delete all recordings on this device
-          </button>
-        </div>
-      </div>
-      <div className="card stack">
-        <h2>Grown-up PIN</h2>
+        <h2>Family access</h2>
+        <p className="notice">{accessConfigured ? "Private access key configured. New devices need the key and PIN." : "Private access key not configured. New production devices stay locked until the owner sets PILOT_ACCESS_KEY in Vercel."}</p>
+        <p className="muted" style={{ fontSize: 14, margin: 0 }}>Changing the PIN or revoking devices locks other browsers. This device stays trusted. Other devices will need the family access key and PIN again. Local recordings are not erased remotely.</p>
         <div>
           <button className="btn secondary" onClick={() => setChangingPin("first")}>
             Change PIN
           </button>
+          <button className="btn danger" style={{ marginTop: 12 }} onClick={async () => {
+            if (!confirm("Lock every other trusted device? This device will stay unlocked.")) return;
+            try { await api("/api/pin", { action: "revokeDevices" }); setToast("Other devices are locked"); }
+            catch { setToast("Couldn’t revoke devices. Unlock the grown-up corner and try again."); }
+          }}>Revoke other devices</button>
         </div>
         <p className="muted" style={{ margin: 0, fontSize: 14 }}>
           Tip: on a shared iPad, Guided Access (Settings → Accessibility) keeps a child inside this app.
@@ -1074,47 +1094,48 @@ function DeviceTab({ setToast }: { setToast: (s: string) => void }) {
 function MicTest() {
   const [state, setState] = useState<"idle" | "recording" | "done" | "error">("idle");
   const [url, setUrl] = useState<string | null>(null);
+  const runRef = useRef(0);
+  const recRef = useRef<Recording | null>(null);
+  const urlRef = useRef<string | null>(null);
 
   useEffect(() => () => {
-    if (url) URL.revokeObjectURL(url);
-  }, [url]);
+    runRef.current++;
+    recRef.current?.cancel();
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+  }, []);
 
   return (
     <div className="card stack">
       <h2>Microphone</h2>
       <p className="muted" style={{ margin: 0, fontSize: 15 }}>
-        Allow the microphone here before handing the device to your child, so they don&apos;t see a permission popup. In
-        Safari, you can make it stick: tap <strong>aA</strong> in the address bar → Website Settings → Microphone → Allow.
+        If you choose to record answers, test the microphone before handing over the device. This three-second test stays in memory and is discarded when you leave this tab.
       </p>
-      {!recordingSupported() ? (
-        <p className="error" style={{ margin: 0 }}>
-          This browser can&apos;t record. Kids can still answer out loud; nothing is saved.
-        </p>
-      ) : (
-        <div className="row">
-          <button
-            className="btn secondary"
-            disabled={state === "recording"}
-            onClick={async () => {
-              try {
-                setState("recording");
-                const rec = await startRecording();
-                await new Promise((r) => setTimeout(r, 3000));
-                const blob = await rec.stop();
-                if (url) URL.revokeObjectURL(url);
-                setUrl(blob ? URL.createObjectURL(blob) : null);
-                setState("done");
-              } catch {
-                setState("error");
-              }
-            }}
-          >
-            {state === "recording" ? "🔴 Recording 3 seconds…" : "🎙️ Test microphone"}
-          </button>
-          {state === "error" && <span className="error">Microphone blocked or unavailable.</span>}
-        </div>
-      )}
-      {state === "done" && url && <audio controls src={url} style={{ width: "100%" }} />}
+      {!recordingSupported() ? <p className="muted">This browser can't record. Kids can still tell their story out loud.</p> : <div className="row">
+        <button className="btn secondary" disabled={state === "recording"} onClick={async () => {
+          const run = ++runRef.current;
+          try {
+            setState("recording");
+            const rec = await startRecording();
+            if (run !== runRef.current) { rec.cancel(); return; }
+            recRef.current = rec;
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            if (run !== runRef.current) return;
+            const blob = await rec.stop();
+            recRef.current = null;
+            if (run !== runRef.current) return;
+            if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+            urlRef.current = blob ? URL.createObjectURL(blob) : null;
+            setUrl(urlRef.current);
+            setState("done");
+          } catch {
+            if (run !== runRef.current) return;
+            recRef.current?.cancel(); recRef.current = null;
+            setState("error");
+          }
+        }}>{state === "recording" ? "Testing microphone…" : "Test microphone"}</button>
+        {url && <audio controls src={url} />}
+        {state === "error" && <p className="error">Couldn't use the microphone. Check this browser's microphone permission.</p>}
+      </div>}
     </div>
   );
 }

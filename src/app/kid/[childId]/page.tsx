@@ -11,6 +11,7 @@ import { api, ApiError } from "@/lib/client/api";
 import { speak, stopSpeaking, unlockSpeech } from "@/lib/client/speech";
 import { recordingSupported, startRecording, type Recording } from "@/lib/client/recorder";
 import { saveRecordings } from "@/lib/client/recordings";
+import { getRecordingPreferences } from "@/lib/client/recording-preferences";
 import { ACKS, BUDDY_LINES, pickQuestions, type AgeBand, type Question } from "@/lib/questions";
 
 type Book = { id: string; title: string; author: string; cover: string | null; questions: string[]; done: boolean };
@@ -42,6 +43,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
   const [phase, setPhase] = useState<TalkPhase>("speaking");
   const [caption, setCaption] = useState("");
   const [micOff, setMicOff] = useState(false);
+  const [recordingEnabled, setRecordingEnabled] = useState(false);
   const answerBusyRef = useRef(false);
   const recRef = useRef<Recording | null>(null);
   const answersRef = useRef<{ question: string; blob: Blob | null }[]>([]);
@@ -114,6 +116,23 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
 
   useEffect(() => () => abortSession(), [abortSession]);
 
+  useEffect(() => {
+    const changed = () => {
+      if (screen !== "talk" || phase === "saving" || phase === "saveFailed") return;
+      abortSession();
+      if (!getRecordingPreferences().enabled) answersRef.current = [];
+      setRecordingEnabled(getRecordingPreferences().enabled);
+      setPhase("paused");
+      setMood("idle");
+    };
+    window.addEventListener("storage", changed);
+    window.addEventListener("bq-recording-preferences", changed);
+    return () => {
+      window.removeEventListener("storage", changed);
+      window.removeEventListener("bq-recording-preferences", changed);
+    };
+  }, [screen, phase, abortSession]);
+
   // ---------- talk session ----------
 
   const listen = useCallback(
@@ -121,7 +140,9 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
       if (sid !== sessionRef.current) return;
       setPhase("preparing");
       setMood("idle");
-      if (!micOff && recordingSupported()) {
+      const enabled = getRecordingPreferences().enabled;
+      setRecordingEnabled(enabled);
+      if (enabled && !micOff && recordingSupported()) {
         try {
           const rec = await startRecording();
           if (sid !== sessionRef.current) {
@@ -133,7 +154,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
           if (sid !== sessionRef.current) return;
           setMicOff(true);
         }
-      } else if (!recordingSupported()) {
+      } else if (enabled && !recordingSupported()) {
         setMicOff(true);
       }
       if (sid !== sessionRef.current) return;
@@ -170,6 +191,7 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
         questionIds: questions.map((q) => q.id),
       });
       await saveRecordings(r.completionId, answersRef.current);
+      answersRef.current = [];
       const reached = r.done >= r.goal;
       setCelebration({ done: r.done, goal: r.goal, reached });
       setScreen("celebrate");
@@ -196,7 +218,10 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
       if (skip) rec?.cancel();
       const blob = rec && !skip ? await rec.stop() : null;
       if (sid !== sessionRef.current) return;
-      answersRef.current[qIndex] = { question: questions[qIndex]?.text ?? "", blob };
+      answersRef.current[qIndex] = {
+        question: questions[qIndex]?.text ?? "",
+        blob: getRecordingPreferences().enabled ? blob : null,
+      };
       if (qIndex + 1 < questions.length) {
         setPhase("ack");
         await say(
@@ -444,7 +469,9 @@ export default function KidPage({ params }: { params: Promise<{ childId: string 
           {phase === "preparing" && "Getting the microphone ready…"}
           {phase === "saving" && "Adding this book to your quest…"}
           {phase === "listening" &&
-            (micOff ? (
+            (!recordingEnabled ? (
+              <span>Your turn · Nothing is being recorded</span>
+            ) : micOff ? (
               <p className="muted" style={{ fontSize: 20, margin: 0 }}>
                 {BUDDY_LINES.micHelp}
               </p>
